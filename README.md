@@ -11,15 +11,6 @@ dotnet publish -c Release -r linux-x64
 dotnet publish -c Release -r win-x64
 ```
 
-### Only build a plugin
-
-```bash
-# Linux
-dotnet build AssettoServer.Plugins.<PluginName> -c Release -r linux-x64
-# Windows
-dotnet build AssettoServer.Plugins.<PluginName> -c Release -r win-x64
-```
-
 ## About
 AssettoServer is a custom game server for Assetto Corsa developed with freeroam in mind. It greatly improves upon the default game server by fixing various security issues and providing new features like AI traffic and dynamic weather.
 
