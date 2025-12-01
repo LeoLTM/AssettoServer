@@ -31,6 +31,9 @@ public class BestLapTimesConfiguration : IValidateConfiguration<BestLapTimesConf
     [YamlMember(Description = "Submit all valid laps to API, not just personal bests")]
     public bool SubmitAllLaps { get; init; } = false;
 
+    [YamlMember(Description = "Ignore CSV lap times when determining new bests (each session starts fresh for API submissions, but CSV still tracks all-time bests)")]
+    public bool IgnoreCsvOnStartup { get; init; } = false;
+
     [YamlIgnore]
     public TimeSpan ApiTimeout => TimeSpan.FromSeconds(ApiTimeoutSeconds);
 }

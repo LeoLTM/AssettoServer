@@ -12,6 +12,7 @@ public class BestLapTimesPlugin : BackgroundService, IDisposable
     private readonly BestLapTimesConfiguration _configuration;
     private readonly EntryCarManager _entryCarManager;
     private readonly Dictionary<string, uint> _bestLapTimes = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, uint> _sessionBestLapTimes = new(StringComparer.OrdinalIgnoreCase);
     private readonly SemaphoreSlim _fileLock = new(1, 1);
     private readonly HttpClient _httpClient;
     private string _csvFilePath = null!;
@@ -27,10 +28,10 @@ public class BestLapTimesPlugin : BackgroundService, IDisposable
 
     public override async Task StartAsync(CancellationToken cancellationToken)
     {
-        Log.Information("BestLapTimesPlugin started with config: ApiUrl={ApiUrl}, ApiTimeout={Timeout}s, CsvEnabled={CsvEnabled}, CsvPath={CsvPath}, MinLapTime={MinLap}ms, MaxCuts={MaxCuts}, SubmitAllLaps={SubmitAll}",
+        Log.Information("BestLapTimesPlugin started with config: ApiUrl={ApiUrl}, ApiTimeout={Timeout}s, CsvEnabled={CsvEnabled}, CsvPath={CsvPath}, MinLapTime={MinLap}ms, MaxCuts={MaxCuts}, SubmitAllLaps={SubmitAll}, IgnoreCsvOnStartup={IgnoreCsv}",
             _configuration.LapTimeApiUrl, _configuration.ApiTimeoutSeconds, _configuration.EnableCsvOutput,
             _configuration.EnableCsvOutput ? Path.Combine(_configuration.OutputDirectory, _configuration.CsvFileName) : "N/A",
-            _configuration.MinimumLapTimeMs, _configuration.MaxAllowedCuts, _configuration.SubmitAllLaps);
+            _configuration.MinimumLapTimeMs, _configuration.MaxAllowedCuts, _configuration.SubmitAllLaps, _configuration.IgnoreCsvOnStartup);
 
         if (_configuration.EnableCsvOutput)
         {
@@ -79,17 +80,29 @@ public class BestLapTimesPlugin : BackgroundService, IDisposable
             }
 
             // Check if this is a new best lap for this nickname
-            bool isNewBest = false;
+            bool isNewAllTimeBest = false;
+            bool isNewSessionBest = false;
             await _fileLock.WaitAsync();
             try
             {
-                if (!_bestLapTimes.TryGetValue(nickname, out uint currentBest) || lapTime < currentBest)
+                // Check all-time best (for CSV)
+                if (!_bestLapTimes.TryGetValue(nickname, out uint currentAllTimeBest) || lapTime < currentAllTimeBest)
                 {
                     _bestLapTimes[nickname] = lapTime;
-                    isNewBest = true;
+                    isNewAllTimeBest = true;
                     
                     Log.Information("New best lap for {Nickname}: {FormattedTime} ({LapTime}ms)",
                         nickname, FormatLapTime(lapTime), lapTime);
+                }
+
+                // Check session best (for API when IgnoreCsvOnStartup is enabled)
+                if (_configuration.IgnoreCsvOnStartup)
+                {
+                    if (!_sessionBestLapTimes.TryGetValue(nickname, out uint currentSessionBest) || lapTime < currentSessionBest)
+                    {
+                        _sessionBestLapTimes[nickname] = lapTime;
+                        isNewSessionBest = true;
+                    }
                 }
             }
             finally
@@ -97,21 +110,27 @@ public class BestLapTimesPlugin : BackgroundService, IDisposable
                 _fileLock.Release();
             }
 
-            // Write to CSV if there's a new best and CSV output is enabled
-            if (isNewBest && _configuration.EnableCsvOutput)
+            // Write to CSV if there's a new all-time best and CSV output is enabled
+            if (isNewAllTimeBest && _configuration.EnableCsvOutput)
             {
                 await WriteBestLapsToCsvAsync();
             }
 
-            // Send to API if it's a new best, or if SubmitAllLaps is enabled
-            if (isNewBest || _configuration.SubmitAllLaps)
+            // Determine if we should send to API:
+            // - If SubmitAllLaps: always send
+            // - If IgnoreCsvOnStartup: send if it's a new session best
+            // - Otherwise: send if it's a new all-time best
+            bool shouldSendToApi = _configuration.SubmitAllLaps || 
+                                   (_configuration.IgnoreCsvOnStartup ? isNewSessionBest : isNewAllTimeBest);
+
+            if (shouldSendToApi)
             {
                 string formattedTime = FormatLapTime(lapTime);
                 _ = Task.Run(async () =>
                 {
                     try
                     {
-                        await SendLapTimeToApiAsync(nickname, lapTime, formattedTime, isNewBest);
+                        await SendLapTimeToApiAsync(nickname, lapTime, formattedTime);
                     }
                     catch (Exception apiEx)
                     {
@@ -219,11 +238,11 @@ public class BestLapTimesPlugin : BackgroundService, IDisposable
         return field;
     }
 
-    private async Task SendLapTimeToApiAsync(string nickName, uint lapTimeMs, string formattedTime, bool isNewBest)
+    private async Task SendLapTimeToApiAsync(string nickName, uint lapTimeMs, string formattedTime)
     {
         try
         {
-            var payload = $"{{\"nickName\":\"{nickName.Replace("\"", "\\\"")}\",\"lapTimeMs\":{lapTimeMs},\"formattedTime\":\"{formattedTime}\",\"isNewBest\":{isNewBest.ToString().ToLowerInvariant()}}}";
+            var payload = $"{{\"nickName\":\"{nickName.Replace("\"", "\\\"")}\",\"bestLapTimeMs\":{lapTimeMs},\"formattedTime\":\"{formattedTime}\"}}";
             var content = new StringContent(payload, Encoding.UTF8, "application/json");
             
             var response = await _httpClient.PostAsync(_configuration.LapTimeApiUrl, content);

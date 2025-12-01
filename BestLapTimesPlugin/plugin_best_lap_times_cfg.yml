@@ -24,3 +24,6 @@ MaxAllowedCuts: 0
 
 # Submit all valid laps to API, not just personal bests
 SubmitAllLaps: false
+
+# Ignore CSV lap times when determining new bests (each session starts fresh for API submissions, but CSV still tracks all-time bests)
+IgnoreCsvOnStartup: false
