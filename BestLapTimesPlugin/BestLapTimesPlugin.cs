@@ -9,35 +9,38 @@ namespace BestLapTimesPlugin;
 
 public class BestLapTimesPlugin : BackgroundService, IDisposable
 {
-    // Hardcoded configuration
-    private const string CsvFileName = "best_laps.csv";
-    private const string OutputDirectory = "lap_times";
-    private const uint MinimumLapTimeMs = 10000;
-    private const string LapTimeApiUrl = "http://localhost:8080/lap-times";
-    
+    private readonly BestLapTimesConfiguration _configuration;
     private readonly EntryCarManager _entryCarManager;
     private readonly Dictionary<string, uint> _bestLapTimes = new(StringComparer.OrdinalIgnoreCase);
     private readonly SemaphoreSlim _fileLock = new(1, 1);
-    private readonly HttpClient _httpClient = new();
+    private readonly HttpClient _httpClient;
     private string _csvFilePath = null!;
 
-    public BestLapTimesPlugin(EntryCarManager entryCarManager)
+    public BestLapTimesPlugin(BestLapTimesConfiguration configuration, EntryCarManager entryCarManager)
     {
+        _configuration = configuration;
         _entryCarManager = entryCarManager;
+        _httpClient = new HttpClient { Timeout = _configuration.ApiTimeout };
         
         _entryCarManager.ClientConnected += OnClientConnected;
     }
 
     public override async Task StartAsync(CancellationToken cancellationToken)
     {
-        // Create output directory if it doesn't exist
-        Directory.CreateDirectory(OutputDirectory);
-        _csvFilePath = Path.Combine(OutputDirectory, CsvFileName);
+        Log.Information("BestLapTimesPlugin started with config: ApiUrl={ApiUrl}, ApiTimeout={Timeout}s, CsvEnabled={CsvEnabled}, CsvPath={CsvPath}, MinLapTime={MinLap}ms, MaxCuts={MaxCuts}, SubmitAllLaps={SubmitAll}",
+            _configuration.LapTimeApiUrl, _configuration.ApiTimeoutSeconds, _configuration.EnableCsvOutput,
+            _configuration.EnableCsvOutput ? Path.Combine(_configuration.OutputDirectory, _configuration.CsvFileName) : "N/A",
+            _configuration.MinimumLapTimeMs, _configuration.MaxAllowedCuts, _configuration.SubmitAllLaps);
 
-        // Load existing best lap times from CSV
-        await LoadBestLapTimesFromCsvAsync();
+        if (_configuration.EnableCsvOutput)
+        {
+            // Create output directory if it doesn't exist
+            Directory.CreateDirectory(_configuration.OutputDirectory);
+            _csvFilePath = Path.Combine(_configuration.OutputDirectory, _configuration.CsvFileName);
 
-        Log.Information("BestLapTimesPlugin started. CSV file: {CsvFilePath}", _csvFilePath);
+            // Load existing best lap times from CSV
+            await LoadBestLapTimesFromCsvAsync();
+        }
 
         await base.StartAsync(cancellationToken);
     }
@@ -60,17 +63,18 @@ public class BestLapTimesPlugin : BackgroundService, IDisposable
             uint lapTime = args.Packet.LapTime;
             byte cuts = args.Packet.Cuts;
 
-            // Reject laps with cuts (hardcoded: cuts not allowed)
-            if (cuts > 0)
+            // Reject laps with too many cuts
+            if (cuts > _configuration.MaxAllowedCuts)
             {
-                Log.Debug("Lap from {Nickname} rejected: {Cuts} cuts detected", nickname, cuts);
+                Log.Debug("Lap from {Nickname} rejected: {Cuts} cuts detected (max allowed: {MaxCuts})", 
+                    nickname, cuts, _configuration.MaxAllowedCuts);
                 return;
             }
 
-            if (lapTime < MinimumLapTimeMs)
+            if (lapTime < _configuration.MinimumLapTimeMs)
             {
                 Log.Debug("Lap from {Nickname} rejected: lap time {LapTime}ms is below minimum {MinLapTime}ms",
-                    nickname, lapTime, MinimumLapTimeMs);
+                    nickname, lapTime, _configuration.MinimumLapTimeMs);
                 return;
             }
 
@@ -93,18 +97,21 @@ public class BestLapTimesPlugin : BackgroundService, IDisposable
                 _fileLock.Release();
             }
 
-            // Write to CSV if there's a new best
-            if (isNewBest)
+            // Write to CSV if there's a new best and CSV output is enabled
+            if (isNewBest && _configuration.EnableCsvOutput)
             {
                 await WriteBestLapsToCsvAsync();
-                
-                // Send to API (fire-and-forget)
+            }
+
+            // Send to API if it's a new best, or if SubmitAllLaps is enabled
+            if (isNewBest || _configuration.SubmitAllLaps)
+            {
                 string formattedTime = FormatLapTime(lapTime);
                 _ = Task.Run(async () =>
                 {
                     try
                     {
-                        await SendLapTimeToApiAsync(nickname, lapTime, formattedTime);
+                        await SendLapTimeToApiAsync(nickname, lapTime, formattedTime, isNewBest);
                     }
                     catch (Exception apiEx)
                     {
@@ -212,14 +219,14 @@ public class BestLapTimesPlugin : BackgroundService, IDisposable
         return field;
     }
 
-    private async Task SendLapTimeToApiAsync(string nickName, uint bestLapTimeMs, string formattedTime)
+    private async Task SendLapTimeToApiAsync(string nickName, uint lapTimeMs, string formattedTime, bool isNewBest)
     {
         try
         {
-            var payload = $"{{\"nickName\":\"{nickName.Replace("\"", "\\\"")}\",\"bestLapTimeMs\":{bestLapTimeMs},\"formattedTime\":\"{formattedTime}\"}}";
+            var payload = $"{{\"nickName\":\"{nickName.Replace("\"", "\\\"")}\",\"lapTimeMs\":{lapTimeMs},\"formattedTime\":\"{formattedTime}\",\"isNewBest\":{isNewBest.ToString().ToLowerInvariant()}}}";
             var content = new StringContent(payload, Encoding.UTF8, "application/json");
             
-            var response = await _httpClient.PostAsync(LapTimeApiUrl, content);
+            var response = await _httpClient.PostAsync(_configuration.LapTimeApiUrl, content);
             
             if (!response.IsSuccessStatusCode)
             {
@@ -233,7 +240,7 @@ public class BestLapTimesPlugin : BackgroundService, IDisposable
         }
         catch (TaskCanceledException ex)
         {
-            Log.Error(ex, "HTTP request timed out when sending lap time to API for {Nickname}", nickName);
+            Log.Warning(ex, "HTTP request timed out when sending lap time to API for {Nickname}", nickName);
         }
     }
 

@@ -4,7 +4,7 @@ using Microsoft.Extensions.Hosting;
 
 namespace BestLapTimesPlugin;
 
-public class BestLapTimesModule : AssettoServerModule
+public class BestLapTimesModule : AssettoServerModule<BestLapTimesConfiguration>
 {
     protected override void Load(ContainerBuilder builder)
     {

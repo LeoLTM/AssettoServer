@@ -1,0 +1,26 @@
+# BestLapTimesPlugin Configuration
+# This file is required when BestLapTimesPlugin is enabled
+
+# API URL to submit lap times to (required)
+LapTimeApiUrl: "http://localhost:8080/lap-times"
+
+# Timeout in seconds for API requests
+ApiTimeoutSeconds: 1
+
+# Enable saving lap times to a CSV file
+EnableCsvOutput: true
+
+# Output directory for the CSV file
+OutputDirectory: "lap_times"
+
+# CSV filename for best lap times
+CsvFileName: "best_laps.csv"
+
+# Minimum valid lap time in milliseconds (laps below this are rejected)
+MinimumLapTimeMs: 10000
+
+# Maximum allowed cuts for a valid lap (0 = no cuts allowed)
+MaxAllowedCuts: 0
+
+# Submit all valid laps to API, not just personal bests
+SubmitAllLaps: false
