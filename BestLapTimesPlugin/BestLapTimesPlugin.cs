@@ -1,3 +1,5 @@
+using System.Net.Http;
+using System.Text;
 using AssettoServer.Network.Tcp;
 using AssettoServer.Server;
 using Microsoft.Extensions.Hosting;
@@ -5,16 +7,18 @@ using Serilog;
 
 namespace BestLapTimesPlugin;
 
-public class BestLapTimesPlugin : BackgroundService
+public class BestLapTimesPlugin : BackgroundService, IDisposable
 {
     // Hardcoded configuration
     private const string CsvFileName = "best_laps.csv";
     private const string OutputDirectory = "lap_times";
     private const uint MinimumLapTimeMs = 10000;
+    private const string LapTimeApiUrl = "http://localhost:8080/lap-times";
     
     private readonly EntryCarManager _entryCarManager;
     private readonly Dictionary<string, uint> _bestLapTimes = new(StringComparer.OrdinalIgnoreCase);
     private readonly SemaphoreSlim _fileLock = new(1, 1);
+    private readonly HttpClient _httpClient = new();
     private string _csvFilePath = null!;
 
     public BestLapTimesPlugin(EntryCarManager entryCarManager)
@@ -93,6 +97,20 @@ public class BestLapTimesPlugin : BackgroundService
             if (isNewBest)
             {
                 await WriteBestLapsToCsvAsync();
+                
+                // Send to API (fire-and-forget)
+                string formattedTime = FormatLapTime(lapTime);
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await SendLapTimeToApiAsync(nickname, lapTime, formattedTime);
+                    }
+                    catch (Exception apiEx)
+                    {
+                        Log.Error(apiEx, "Error sending lap time to API for {Nickname}", nickname);
+                    }
+                });
             }
         }
         catch (Exception ex)
@@ -189,8 +207,40 @@ public class BestLapTimesPlugin : BackgroundService
         // If the field contains comma, quote, or newline, wrap in quotes and escape quotes
         if (field.Contains(',') || field.Contains('"') || field.Contains('\n') || field.Contains('\r'))
         {
-            return $"\"{field.Replace("\"", "\"\"")}\"";
+            return $"\"{field.Replace("\"", "\"\"")}\""; 
         }
         return field;
+    }
+
+    private async Task SendLapTimeToApiAsync(string nickName, uint bestLapTimeMs, string formattedTime)
+    {
+        try
+        {
+            var payload = $"{{\"nickName\":\"{nickName.Replace("\"", "\\\"")}\",\"bestLapTimeMs\":{bestLapTimeMs},\"formattedTime\":\"{formattedTime}\"}}";
+            var content = new StringContent(payload, Encoding.UTF8, "application/json");
+            
+            var response = await _httpClient.PostAsync(LapTimeApiUrl, content);
+            
+            if (!response.IsSuccessStatusCode)
+            {
+                Log.Error("Failed to send lap time to API. Status: {StatusCode}, Reason: {ReasonPhrase}",
+                    (int)response.StatusCode, response.ReasonPhrase);
+            }
+        }
+        catch (HttpRequestException ex)
+        {
+            Log.Error(ex, "HTTP request failed when sending lap time to API for {Nickname}", nickName);
+        }
+        catch (TaskCanceledException ex)
+        {
+            Log.Error(ex, "HTTP request timed out when sending lap time to API for {Nickname}", nickName);
+        }
+    }
+
+    public override void Dispose()
+    {
+        _httpClient.Dispose();
+        _fileLock.Dispose();
+        base.Dispose();
     }
 }
