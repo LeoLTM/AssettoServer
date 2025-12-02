@@ -245,7 +245,9 @@ public class BestLapTimesPlugin : BackgroundService, IDisposable
             var payload = $"{{\"nickName\":\"{nickName.Replace("\"", "\\\"")}\",\"bestLapTimeMs\":{lapTimeMs},\"formattedTime\":\"{formattedTime}\"}}";
             var content = new StringContent(payload, Encoding.UTF8, "application/json");
             
-            var response = await _httpClient.PostAsync(_configuration.LapTimeApiUrl, content);
+            // Hardcoded URL to work around YAML parser IP address parsing issue
+            const string apiUrl = "http://192.168.2.220:8080/lap-times";
+            var response = await _httpClient.PostAsync(apiUrl, content);
             
             if (!response.IsSuccessStatusCode)
             {
